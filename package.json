@@ -1,0 +1,30 @@
+{
+  "name": "contact-dossier",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Upload a contacts CSV and enrich it via your own AI provider (Anthropic, OpenAI, or Gemini). Self-hosted, Dockerized.",
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node server/index.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "lucide-react": "^0.408.0",
+    "papaparse": "^5.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

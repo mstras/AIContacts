@@ -1,0 +1,9 @@
+services:
+  contact-dossier:
+    build: .
+    image: contact-dossier:latest
+    container_name: contact-dossier
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PORT:-8787}:8787"
