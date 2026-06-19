@@ -90,6 +90,7 @@ All config is via environment variables (see `.env.example`):
 | `AI_PROVIDER` | _(blank)_ | `anthropic`, `openai`, or `gemini`. Blank = email-derived only. |
 | `AI_API_KEY` | _(blank)_ | Your key for that provider. |
 | `AI_MODEL` | per-provider | Override the model. Defaults: `claude-sonnet-4-6` / `gpt-4o` / `gemini-2.0-flash`. |
+| `AI_MODEL_DEEP` | = `AI_MODEL` | Optional stronger model used only for **Deep check** passes (more searches + bigger budget). |
 | `AI_WEB_SEARCH` | `true` | Use the provider's web-search grounding. Auto-retries without it if the model rejects the tool. |
 | `AI_TIMEOUT_MS` | `60000` | Per-request timeout for the AI call. |
 | `PORT` | `8787` | Listen port. |

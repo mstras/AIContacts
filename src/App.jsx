@@ -3,7 +3,7 @@ import Papa from "papaparse";
 import {
   Upload, Search, Download, X, ChevronDown, ChevronRight, Settings,
   Link as LinkIcon, MapPin, Briefcase, StopCircle, Info, RotateCw, Globe, ExternalLink,
-  Cpu, AlertTriangle, Ban, Undo2, Pencil,
+  Cpu, AlertTriangle, Ban, Undo2, Pencil, Radar,
 } from "lucide-react";
 
 const POOL = 4; // concurrent enrichment requests
@@ -105,6 +105,8 @@ const STYLE = `
 .cd-bigav{width:120px;height:120px;border-radius:6px;background:var(--ink);color:#fff;
   display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:600;overflow:hidden;border:1px solid var(--line);}
 .cd-bigav img{width:100%;height:100%;object-fit:cover;}
+.cd-av.logo,.cd-bigav.logo{background:#fff;border:1px solid var(--line);}
+.cd-av.logo img,.cd-bigav.logo img{object-fit:contain;padding:3px;}
 .cd-detrow{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;margin-bottom:9px;color:var(--ink2);}
 .cd-detrow svg{margin-top:2px;flex-shrink:0;color:var(--muted);}
 .cd-detrow a{color:var(--signal);text-decoration:none;}
@@ -185,6 +187,17 @@ function chipFor(e) {
   return ["none", "MINIMAL"];
 }
 
+/* tier of a row: enriched | derived | minimal | idle | loading | error | rejected */
+function tierOf(e) {
+  if (e.rejected) return "rejected";
+  if (e.status !== "done") return e.status; // idle / loading / error
+  const f = effective(e);
+  if (f.jobTitle || f.location) return "enriched";
+  if (f.company || f.photo || f.website) return "derived";
+  return "minimal";
+}
+const isWeak = (e) => tierOf(e) === "derived" || tierOf(e) === "minimal";
+
 /* recognized Google Contacts CSV columns — passed through untouched on export */
 const GCOL = /^(Name|Given Name|Additional Name|Family Name|Yomi Name|Name Prefix|Name Suffix|Initials|Nickname|Short Name|Maiden Name|First Name|Middle Name|Last Name|Phonetic First Name|Phonetic Middle Name|Phonetic Last Name|File As|Birthday|Gender|Location|Occupation|Notes|Photo|Group Membership|Labels|Organization.*|E-?mail \d+.*|Phone \d+.*|Address \d+.*|Website \d+.*|IM \d+.*|Relation \d+.*|Event \d+.*|Custom Field \d+.*)$/i;
 
@@ -218,6 +231,7 @@ export default function App() {
   const enrichedCount = useMemo(
     () => rows.filter((r) => r._e && r._e.status === "done").length, [rows]
   );
+  const weakRows = useMemo(() => rows.filter((r) => isWeak(r._e)), [rows]);
 
   const handleFile = useCallback((file) => {
     if (!file) return;
@@ -235,8 +249,12 @@ export default function App() {
     });
   }, []);
 
-  const enrichOne = useCallback(async (row) => {
-    const body = { name: getName(row, map), email: row[map.email] || "", company: row[map.company] || "" };
+  const enrichOne = useCallback(async (row, deep = false) => {
+    const { __id, _e, ...extra } = row;
+    const body = {
+      name: getName(row, map), email: row[map.email] || "", company: row[map.company] || "",
+      deep, extra,
+    };
     try {
       const res = await fetch("/api/enrich", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -259,8 +277,7 @@ export default function App() {
   const setRejected = (id, rejected) =>
     setRows((rs) => rs.map((r) => (r.__id === id ? { ...r, _e: { ...r._e, rejected } } : r)));
 
-  const runAll = useCallback(async () => {
-    const targets = rows.filter((r) => r._e.status !== "done" && !r._e.rejected);
+  const processTargets = useCallback(async (targets, deep) => {
     if (!targets.length) return;
     stopRef.current = false;
     setRunning(true);
@@ -271,7 +288,7 @@ export default function App() {
       for (const row of it) {
         if (stopRef.current) return;
         setStatus(row.__id, "loading");
-        const result = await enrichOne(row);
+        const result = await enrichOne(row, deep);
         applyResult(row.__id, result);
         done += 1;
         setProg({ done, total: targets.length });
@@ -279,12 +296,24 @@ export default function App() {
     };
     await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, worker));
     setRunning(false);
-  }, [rows, enrichOne]);
+  }, [enrichOne]);
+
+  const runAll = useCallback(
+    () => processTargets(rows.filter((r) => r._e.status !== "done" && !r._e.rejected), false),
+    [processTargets, rows]);
+
+  const runWeakDeep = useCallback(
+    () => processTargets(rows.filter((r) => isWeak(r._e)), true),
+    [processTargets, rows]);
 
   const runRow = useCallback(async (row) => {
     setStatus(row.__id, "loading");
-    const result = await enrichOne(row);
-    applyResult(row.__id, result);
+    applyResult(row.__id, await enrichOne(row, false));
+  }, [enrichOne]);
+
+  const deepRow = useCallback(async (row) => {
+    setStatus(row.__id, "loading");
+    applyResult(row.__id, await enrichOne(row, true));
   }, [enrichOne]);
 
   /* --------- exports --------- */
@@ -419,6 +448,10 @@ export default function App() {
                     <Search size={15} /> Enrich all
                   </button>
                 )}
+                <button className="cd-btn alt" onClick={runWeakDeep} disabled={running || !weakRows.length}
+                  title="Re-run a deeper, multi-angle search on contacts that came back minimal or derived">
+                  <Radar size={15} /> Deep re-check{weakRows.length ? ` (${weakRows.length})` : ""}
+                </button>
                 <button className="cd-btn alt" onClick={exportGoogle} disabled={!rows.length} title="CSV ready for Google Contacts import">
                   <Download size={15} /> Google CSV
                 </button>
@@ -437,6 +470,7 @@ export default function App() {
                 <div className="cd-kv">
                   <div><span>Provider</span><b>{cfg?.provider || "—"}</b></div>
                   <div><span>Model</span><b>{cfg?.model || "—"}</b></div>
+                  <div><span>Deep model</span><b>{cfg?.deepModel || cfg?.model || "—"}</b></div>
                   <div><span>Web search</span><b>{cfg?.webSearch ? "on" : "off"}</b></div>
                   <div><span>Status</span><b style={{ color: cfg?.configured ? "var(--good)" : "var(--bad)" }}>
                     {cfg?.configured ? "connected" : "not configured"}</b></div>
@@ -480,7 +514,7 @@ export default function App() {
                   <React.Fragment key={r.__id}>
                     <div className={"cd-trow body" + (r._e.rejected ? " rej" : "")} onClick={() => setOpen(isOpen ? null : r.__id)}>
                       <div>{isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</div>
-                      <div><Avatar photo={f.photo} name={nm} small /></div>
+                      <div><Avatar photo={f.photo} logo={f.logo} name={nm} small /></div>
                       <div>
                         <div className="cd-name">
                           {nm || <span style={{ color: "#b6b8ba" }}>unnamed</span>}
@@ -503,6 +537,7 @@ export default function App() {
                         onReject={(id) => setRejected(id, true)}
                         onRestore={(id) => setRejected(id, false)}
                         onRetrace={runRow}
+                        onDeep={deepRow}
                       />
                     )}
                   </React.Fragment>
@@ -521,6 +556,10 @@ export default function App() {
             <div className="cd-notebody">
               <b>Enrich.</b> Each contact gets email-derived data (company, website, logo, Gravatar photo) on the server,
               then — if an AI provider is configured — a web-grounded job title, location, and profile merged on top.<br /><br />
+              <b>Deep re-check.</b> Contacts that come back <b>MINIMAL</b> or <b>DERIVED</b> can be re-run with a more
+              thorough, multi-angle search — more web lookups, your other CSV fields fed in as hints, and a stronger model
+              if you set <code>AI_MODEL_DEEP</code>. Use the toolbar button to sweep them all at once, or <b>Deep check</b>
+              on a single contact.<br /><br />
               <b>Correct or reject.</b> Open any contact to type your own values (these always win), or hit
               <b> Reject enrichment</b> to drop the machine’s data for that person. Your typed corrections survive a reject,
               so you can reject a bad guess and enter the right answer.<br /><br />
@@ -539,7 +578,7 @@ export default function App() {
 }
 
 /* ----------------------- contact detail panel ----------------------- */
-function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace }) {
+function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace, onDeep }) {
   const e = row._e;
   const f = effective(e);
   const [form, setForm] = useState(e.edits || {});
@@ -552,7 +591,7 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace }) {
   return (
     <div className="cd-detail">
       <div className="cd-detgrid">
-        <div><Avatar photo={f.photo} name={nm} /></div>
+        <div><Avatar photo={f.photo} logo={f.logo} name={nm} /></div>
         <div>
           {e.status === "error" && (
             <div className="cd-banner" style={{ color: "var(--bad)" }}>
@@ -633,6 +672,10 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace }) {
             <button className="cd-btn alt" onClick={() => onRetrace(row)} disabled={e.status === "loading"}>
               <RotateCw size={14} /> {e.status === "done" ? "Re-file" : "Trace this contact"}
             </button>
+            <button className="cd-btn alt" onClick={() => onDeep(row)} disabled={e.status === "loading"}
+              title="Run a deeper, multi-angle search using more web lookups">
+              <Radar size={14} /> Deep check
+            </button>
             {e.rejected ? (
               <button className="cd-btn alt" onClick={() => onRestore(row.__id)}>
                 <Undo2 size={14} /> Restore enrichment
@@ -649,12 +692,23 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace }) {
   );
 }
 
-function Avatar({ photo, name, small }) {
-  const [err, setErr] = useState(false);
-  useEffect(() => { setErr(false); }, [photo]);
+function Avatar({ photo, logo, name, small }) {
+  const sources = [
+    photo ? { url: photo, kind: "photo" } : null,
+    logo ? { url: logo, kind: "logo" } : null,
+  ].filter(Boolean);
+  const [idx, setIdx] = useState(0);
+  useEffect(() => { setIdx(0); }, [photo, logo]);
   const cls = small ? "cd-av" : "cd-bigav";
-  if (photo && !err)
-    return <div className={cls}><img src={photo} alt={name} onError={() => setErr(true)} /></div>;
+  const cur = sources[idx];
+  if (cur) {
+    return (
+      <div className={cls + (cur.kind === "logo" ? " logo" : "")}>
+        <img src={cur.url} alt={name} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+          onError={() => setIdx((i) => i + 1)} />
+      </div>
+    );
+  }
   return <div className={cls}>{initials(name)}</div>;
 }
 
@@ -662,5 +716,5 @@ function CompanyLogo({ src }) {
   const [err, setErr] = useState(false);
   useEffect(() => { setErr(false); }, [src]);
   if (err) return null;
-  return <img className="cd-logo" src={src} alt="" onError={() => setErr(true)} />;
+  return <img className="cd-logo" src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setErr(true)} />;
 }

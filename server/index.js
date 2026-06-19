@@ -19,7 +19,14 @@ const DEFAULT_MODEL = {
   gemini: "gemini-2.0-flash",
 };
 const MODEL = process.env.AI_MODEL || DEFAULT_MODEL[PROVIDER] || "";
+const MODEL_DEEP = process.env.AI_MODEL_DEEP || MODEL; // optional stronger model for deep checks
 const CONFIGURED = Boolean(PROVIDER && KEY && DEFAULT_MODEL[PROVIDER]);
+
+// how hard to search per mode
+const LIMITS = {
+  normal: { maxTokens: 1024, maxUses: 5 },
+  deep: { maxTokens: 1500, maxUses: 8 },
+};
 
 /* ------------------------- deterministic layer ------------------------- */
 const FREE = new Set([
@@ -64,22 +71,55 @@ function deriveLocal({ email, company }) {
 }
 
 /* ----------------------------- AI layer ----------------------------- */
-function buildPrompt({ name, email, company }) {
-  return `You are a contact-enrichment researcher. Use web search of PUBLIC sources only to find current professional information for ONE specific person.
+function extraLines(extra) {
+  if (!extra || typeof extra !== "object") return "";
+  const skip = new Set(["__id", "_e"]);
+  const lines = [];
+  for (const [k, v] of Object.entries(extra)) {
+    if (skip.has(k) || v == null) continue;
+    const s = String(v).trim();
+    if (!s) continue;
+    lines.push(`- ${k}: ${s.slice(0, 80)}`);
+    if (lines.length >= 10) break;
+  }
+  return lines.join("\n");
+}
+
+function buildPrompt({ name, email, company }, { deep, extra } = {}) {
+  const domain = emailDomain(email);
+  let p = `You are a contact-enrichment researcher. Use web search of PUBLIC sources only to find current professional information for ONE specific person.
 
 Person:
 - Name: ${name || "(unknown)"}
 - Email: ${email || "(none)"}
+- Email domain: ${domain || "(none)"}
 - Company hint: ${company || "(none)"}
+`;
 
+  if (deep) {
+    const hints = extraLines(extra);
+    p += `
+Additional fields from the user's record (hints; may be noisy):
+${hints || "(none)"}
+
+Search strategy — be thorough and try several angles:
+1. name + company, 2. name + email domain, 3. the email address itself, 4. name + any title/location hint above.
+Check firm or company team/"about" pages, professional directories and bar/association listings, conference
+speaker bios, news mentions, and LinkedIn. A strong best match corroborated by at least two independent signals
+may be reported at "medium" confidence. Still never fabricate; if nothing checks out, use "none".
+`;
+  }
+
+  p += `
 Return ONLY a single JSON object, no prose, no markdown, with exactly these keys:
 {"jobTitle":string|null,"company":string|null,"location":string|null,"linkedinUrl":string|null,"links":[{"label":string,"url":string}],"summary":string|null,"confidence":"high"|"medium"|"low"|"none"}
 
 Rules:
-- Only report facts you actually find. Never guess, infer, or fabricate.
-- Prefer a match corroborated by the email domain or the company hint. If you cannot confidently identify THIS specific person, set confidence to "none" and all other fields to null/[].
+- Only report facts you actually find. Never guess${deep ? " beyond a corroborated best match" : ", infer,"} or fabricate.
+- Prefer a match corroborated by the email domain or company hint. If you cannot identify THIS specific person, set confidence "none" and other fields null/[].
 - "location" = city/region/country only. Do NOT include home or street addresses.
-- "summary" <= 240 characters. Be terse so the JSON fits.`;
+- "summary" <= 240 characters.`;
+  return p;
 }
 
 function extractJson(text) {
@@ -96,9 +136,9 @@ function withTimeout() {
   return { signal: c.signal, clear: () => clearTimeout(t) };
 }
 
-async function anthropic({ prompt, model, search }) {
-  const body = { model, max_tokens: 1024, messages: [{ role: "user", content: prompt }] };
-  if (search) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }];
+async function anthropic({ prompt, model, search, maxTokens, maxUses }) {
+  const body = { model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] };
+  if (search) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses }];
   const { signal, clear } = withTimeout();
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -112,8 +152,8 @@ async function anthropic({ prompt, model, search }) {
   } finally { clear(); }
 }
 
-async function openai({ prompt, model, search }) {
-  const body = { model, input: prompt, max_output_tokens: 1024 };
+async function openai({ prompt, model, search, maxTokens }) {
+  const body = { model, input: prompt, max_output_tokens: maxTokens };
   if (search) body.tools = [{ type: "web_search" }];
   const { signal, clear } = withTimeout();
   try {
@@ -131,8 +171,8 @@ async function openai({ prompt, model, search }) {
   } finally { clear(); }
 }
 
-async function gemini({ prompt, model, search }) {
-  const body = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 1024 } };
+async function gemini({ prompt, model, search, maxTokens }) {
+  const body = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens } };
   if (search) body.tools = [{ google_search: {} }];
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${KEY}`;
   const { signal, clear } = withTimeout();
@@ -150,16 +190,21 @@ async function gemini({ prompt, model, search }) {
 
 const PROVIDERS = { anthropic, openai, gemini };
 
-async function callAI(ctx) {
+async function callAI(ctx, { deep = false, extra = null } = {}) {
   const fn = PROVIDERS[PROVIDER];
   if (!fn) throw new Error("unknown provider: " + PROVIDER);
-  const args = { prompt: buildPrompt(ctx), model: MODEL };
+  const lim = deep ? LIMITS.deep : LIMITS.normal;
+  const args = {
+    prompt: buildPrompt(ctx, { deep, extra }),
+    model: deep ? MODEL_DEEP : MODEL,
+    maxTokens: lim.maxTokens,
+    maxUses: lim.maxUses,
+  };
   let text;
   try {
     text = await fn({ ...args, search: SEARCH });
   } catch (e) {
-    // If web-search tooling isn't accepted by the chosen model, retry once without it.
-    if (SEARCH) text = await fn({ ...args, search: false });
+    if (SEARCH) text = await fn({ ...args, search: false }); // model rejected the search tool → retry plain
     else throw e;
   }
   return extractJson(text);
@@ -170,18 +215,24 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/config", (_req, res) => {
-  res.json({ provider: PROVIDER || null, model: MODEL || null, webSearch: SEARCH, configured: CONFIGURED });
+  res.json({
+    provider: PROVIDER || null,
+    model: MODEL || null,
+    deepModel: MODEL_DEEP || null,
+    webSearch: SEARCH,
+    configured: CONFIGURED,
+  });
 });
 
 app.post("/api/enrich", async (req, res) => {
-  const { name = "", email = "", company = "" } = req.body || {};
+  const { name = "", email = "", company = "", deep = false, extra = null } = req.body || {};
   const data = deriveLocal({ email, company });
   let aiError = null;
   let usedAI = false;
 
   if (CONFIGURED) {
     try {
-      const ai = await callAI({ name, email, company });
+      const ai = await callAI({ name, email, company }, { deep, extra });
       if (ai && ai.confidence !== "none") {
         for (const k of ["jobTitle", "company", "location", "linkedinUrl", "summary"]) {
           if (ai[k]) { data[k] = ai[k]; usedAI = true; }
@@ -194,10 +245,9 @@ app.post("/api/enrich", async (req, res) => {
     }
   }
 
-  res.json({ ...data, source: usedAI ? "ai" : "derived", aiError });
+  res.json({ ...data, source: usedAI ? (deep ? "ai-deep" : "ai") : "derived", aiError });
 });
 
-// Static frontend (built by Vite into /dist)
 if (fs.existsSync(DIST)) {
   app.use(express.static(DIST));
   app.get("*", (_req, res) => res.sendFile(path.join(DIST, "index.html")));
@@ -209,6 +259,6 @@ if (fs.existsSync(DIST)) {
 app.listen(PORT, () => {
   console.log(`Contact Dossier listening on :${PORT}`);
   console.log(CONFIGURED
-    ? `AI provider: ${PROVIDER} (${MODEL}), web search ${SEARCH ? "on" : "off"}`
+    ? `AI provider: ${PROVIDER} (${MODEL}${MODEL_DEEP !== MODEL ? `, deep: ${MODEL_DEEP}` : ""}), web search ${SEARCH ? "on" : "off"}`
     : `No AI provider configured — serving email-derived data only.`);
 });
