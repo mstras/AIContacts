@@ -1,10 +1,13 @@
-# Contact Dossier
+# AIContacts (Contact Dossier)
 
 Upload a CSV of contacts and enrich it with employment info, location, links, and photos —
 using **your own** AI provider (Anthropic, OpenAI, or Gemini). Self-hosted, no third-party
-SaaS, your API key stays on the server. Built to run in Docker.
+SaaS, your API key stays on the server. Ships as a prebuilt Docker image.
 
 ![status](https://img.shields.io/badge/self--hosted-ready-success)
+![image](https://img.shields.io/badge/ghcr.io-mstras%2Faicontacts-blue)
+
+Repo: <https://github.com/mstras/AIContacts> · Image: `ghcr.io/mstras/aicontacts`
 
 ## What it does
 
@@ -18,8 +21,8 @@ Enrichment happens in two layers:
    what it finds on top of layer 1. The prompt is tuned to report only what's actually found and
    to mark anything unconfirmed rather than guess.
 
-Each contact also gets one-click **LinkedIn / Google / company-site** links so you can verify by
-hand before acting on anything.
+You can **edit or override** any field by hand (your values always win), **reject** the machine's
+data for a contact, and export a CSV that imports cleanly into **Google Contacts**.
 
 ## Architecture
 
@@ -32,17 +35,51 @@ A tiny Express server serves the built frontend and exposes `/api/enrich`. Your 
 the server's environment and is **never sent to the browser** — which also sidesteps the CORS and
 key-exposure problems you hit calling providers directly from client-side code.
 
-## Quick start (Docker)
+## Quick start — pull the image (recommended)
+
+The published image is at `ghcr.io/mstras/aicontacts`.
 
 ```bash
-git clone https://github.com/<you>/contact-dossier.git
-cd contact-dossier
+git clone https://github.com/mstras/AIContacts.git
+cd AIContacts
 cp .env.example .env       # then edit .env: set AI_PROVIDER and AI_API_KEY
+docker compose up -d       # pulls ghcr.io/mstras/aicontacts:latest and starts it
+```
+
+Or without cloning, using `docker run`:
+
+```bash
+docker run -d --name aicontacts -p 8787:8787 --env-file .env \
+  ghcr.io/mstras/aicontacts:latest
+```
+
+Open **http://localhost:8787** (or your server's host/port). To put it behind your existing
+reverse proxy, point the proxy at the container's port `8787`. Update later with
+`docker compose pull && docker compose up -d`.
+
+> If the package is private, authenticate first:
+> `echo $GHCR_TOKEN | docker login ghcr.io -u <your-username> --password-stdin`
+
+## Build from source instead
+
+```bash
+git clone https://github.com/mstras/AIContacts.git
+cd AIContacts
+cp .env.example .env
+# In docker-compose.yml: comment out `pull_policy: always` and uncomment `build: .`
 docker compose up -d --build
 ```
 
-Open **http://localhost:8787** (or your server's host/port). To put it behind your existing reverse
-proxy, point the proxy at the container's port `8787`.
+## Publishing the image (GitHub Actions)
+
+`.github/workflows/docker-publish.yml` builds and pushes to GHCR automatically:
+
+- on every push to `main` → `ghcr.io/mstras/aicontacts:latest`
+- on a `v*` git tag → a matching version tag
+
+It uses the repo's built-in `GITHUB_TOKEN` (no secrets to add). After the first successful run,
+open the package on GitHub and set its visibility to **public** if you want anyone to pull without
+logging in.
 
 ## Configuration
 
@@ -61,14 +98,11 @@ After changing `.env`, restart: `docker compose up -d`.
 
 ### Provider notes
 
-- **Anthropic** — uses the Messages API with the `web_search` tool. Any model your key can access
-  works; set `AI_MODEL` accordingly.
-- **OpenAI** — uses the Responses API with the `web_search` tool. If your chosen model doesn't
-  support the tool, the server falls back to a plain call automatically (results then rely on the
-  model's own knowledge).
-- **Gemini** — uses `generateContent` with `google_search` grounding. The default
-  `gemini-2.0-flash` supports it; older 1.5 models use a different grounding API, so prefer a 2.x
-  model.
+- **Anthropic** — Messages API with the `web_search` tool. Any model your key can access works.
+- **OpenAI** — Responses API with the `web_search` tool. If your model doesn't support it, the
+  server falls back to a plain call automatically.
+- **Gemini** — `generateContent` with `google_search` grounding. Prefer a 2.x model
+  (default `gemini-2.0-flash`); older 1.5 models use a different grounding API.
 
 ## Local development
 
@@ -78,8 +112,7 @@ cp .env.example .env        # set your provider + key
 npm run dev                 # server on :8787, Vite dev server on :5173 (proxies /api)
 ```
 
-Open http://localhost:5173. Build a production bundle with `npm run build` (outputs to `dist/`),
-then `npm start` to serve it from the Express server on `:8787`.
+Open http://localhost:5173. Build a production bundle with `npm run build`, then `npm start`.
 
 ## CSV format
 
@@ -89,8 +122,16 @@ Any CSV with a header row. The app auto-detects common column names and lets you
 - **Email** — `email` (unlocks company/website/logo/photo)
 - **Company** — `company`, `organization`, `employer` (optional hint)
 
-Export produces your original columns plus `Enriched Title`, `Enriched Company`, `Location`,
-`LinkedIn`, `Website`, `Profile Summary`, `Photo URL`, `Source`, and `Result`.
+### Exports
+
+- **Google CSV** — maps everything into Google Contacts' own columns (`Organization Name` /
+  `Organization Title`, `Website`, `Notes`, `Photo`, and an `Enriched` label) and passes through any
+  Google-format columns your file already had, so a re-import updates contacts without losing phones
+  or addresses. Location goes into `Notes` (not a structured address) on purpose. Google's CSV import
+  generally won't fetch photo URLs, so the `Photo` column is for reference.
+- **Full CSV** — your original columns plus enrichment as extra columns.
+
+Both honor your manual edits and per-contact rejections.
 
 ## A note on accuracy & privacy
 
