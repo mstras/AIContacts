@@ -70,6 +70,67 @@ function deriveLocal({ email, company }) {
   return d;
 }
 
+/* ------------------------- name extraction ------------------------- */
+const PARTICLES = new Set(["de", "del", "della", "der", "van", "von", "da", "di", "la", "le", "du", "den", "ten", "ter", "dos", "das"]);
+
+function titleCaseWord(w) {
+  const lw = w.toLowerCase();
+  return lw.replace(/(^|[-'’.])([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
+}
+
+function smartTitleCase(name) {
+  return name.split(/\s+/).map((w, i) => {
+    const lw = w.toLowerCase();
+    if (i > 0 && PARTICLES.has(lw)) return lw;
+    return titleCaseWord(w);
+  }).join(" ");
+}
+
+function fromEmailLocal(local) {
+  const base = (local || "").split("+")[0];
+  const tokens = base.split(/[._\-]+|\d+/).filter((t) => /[a-zA-Z]{2,}/.test(t));
+  if (tokens.length >= 2) return tokens.map((t) => titleCaseWord(t.toLowerCase())).join(" ");
+  return null; // e.g. "jsmith" — too ambiguous to split safely
+}
+
+function cleanName(raw, email) {
+  let name = String(raw || "").trim().replace(/^["']+|["']+$/g, "").trim();
+
+  // name that is actually an email / contains an address → treat as missing
+  if (!name || /\S+@\S+/.test(name)) name = "";
+
+  // "Last, First" → "First Last"
+  if (name.includes(",")) {
+    const parts = name.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length === 2 && !/\d/.test(parts[0])) name = parts[1] + " " + parts[0];
+  }
+
+  // drop parenthetical/bracketed extras and collapse whitespace
+  name = name.replace(/\s*[([].*?[)\]]\s*/g, " ").replace(/\s+/g, " ").trim();
+
+  // recase only when ALL CAPS or all lowercase (don't break McDonald, DeAngelo, etc.)
+  if (name && (name === name.toUpperCase() || name === name.toLowerCase())) name = smartTitleCase(name);
+
+  // still nothing usable → reconstruct from the email local-part
+  if (!name) {
+    const local = ((email || "").split("@")[0] || "").split("+")[0];
+    const derived = fromEmailLocal(local);
+    if (derived) name = derived;
+    else {
+      const tok = local.replace(/[._\-]+/g, " ").replace(/\d+/g, "").trim();
+      if (tok && /[a-zA-Z]/.test(tok)) name = smartTitleCase(tok);
+    }
+  }
+
+  // never return a raw email address as a name
+  if (!name) {
+    const rawTrim = String(raw || "").trim();
+    name = /\S+@\S+/.test(rawTrim) ? "" : rawTrim;
+  }
+
+  return name;
+}
+
 /* ----------------------------- AI layer ----------------------------- */
 function extraLines(extra) {
   if (!extra || typeof extra !== "object") return "";
@@ -112,9 +173,10 @@ may be reported at "medium" confidence. Still never fabricate; if nothing checks
 
   p += `
 Return ONLY a single JSON object, no prose, no markdown, with exactly these keys:
-{"jobTitle":string|null,"company":string|null,"location":string|null,"linkedinUrl":string|null,"links":[{"label":string,"url":string}],"summary":string|null,"confidence":"high"|"medium"|"low"|"none"}
+{"fullName":string|null,"jobTitle":string|null,"company":string|null,"location":string|null,"linkedinUrl":string|null,"links":[{"label":string,"url":string}],"summary":string|null,"confidence":"high"|"medium"|"low"|"none"}
 
 Rules:
+- "fullName" = the person's correct, properly-capitalized full name if you confidently identify them (fix casing/typos, expand from the email if needed); else null.
 - Only report facts you actually find. Never guess${deep ? " beyond a corroborated best match" : ", infer,"} or fabricate.
 - Prefer a match corroborated by the email domain or company hint. If you cannot identify THIS specific person, set confidence "none" and other fields null/[].
 - "location" = city/region/country only. Do NOT include home or street addresses.
@@ -227,18 +289,30 @@ app.get("/api/config", (_req, res) => {
 app.post("/api/enrich", async (req, res) => {
   const { name = "", email = "", company = "", deep = false, extra = null } = req.body || {};
   const data = deriveLocal({ email, company });
+
+  const original = String(name || "").trim();
+  const cleaned = cleanName(name, email);
+  data.originalName = original;
+  data.name = cleaned;
+  data.nameSource = cleaned && cleaned !== original ? "cleaned" : "original";
+
   let aiError = null;
   let usedAI = false;
 
   if (CONFIGURED) {
     try {
-      const ai = await callAI({ name, email, company }, { deep, extra });
+      const ai = await callAI({ name: cleaned || original, email, company }, { deep, extra });
       if (ai && ai.confidence !== "none") {
         for (const k of ["jobTitle", "company", "location", "linkedinUrl", "summary"]) {
           if (ai[k]) { data[k] = ai[k]; usedAI = true; }
         }
         if (ai.photo) data.photo = ai.photo;
         if (Array.isArray(ai.links) && ai.links.length) data.links = ai.links;
+        if (ai.fullName && String(ai.fullName).trim()) {
+          data.name = String(ai.fullName).trim();
+          data.nameSource = "ai";
+          usedAI = true;
+        }
       }
     } catch (e) {
       aiError = String(e.message || e);

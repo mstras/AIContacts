@@ -157,7 +157,7 @@ const initials = (s) =>
   (s || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
 
 const EDIT_FIELDS = [
-  ["jobTitle", "Job title"], ["company", "Company"], ["location", "Location"],
+  ["name", "Full name"], ["jobTitle", "Job title"], ["company", "Company"], ["location", "Location"],
   ["linkedinUrl", "LinkedIn URL"], ["website", "Website"], ["photo", "Photo URL"],
 ];
 
@@ -197,6 +197,16 @@ function tierOf(e) {
   return "minimal";
 }
 const isWeak = (e) => tierOf(e) === "derived" || tierOf(e) === "minimal";
+
+/* effective display name: manual edit wins; reject reverts to original; else server's corrected name */
+function effectiveName(row, map, e) {
+  const ed = e.edits || {};
+  if (ed.name && String(ed.name).trim()) return String(ed.name).trim();
+  const orig = getName(row, map);
+  if (e.rejected) return orig;
+  const dn = e.data && e.data.name;
+  return (dn && String(dn).trim()) ? String(dn).trim() : orig;
+}
 
 /* recognized Google Contacts CSV columns — passed through untouched on export */
 const GCOL = /^(Name|Given Name|Additional Name|Family Name|Yomi Name|Name Prefix|Name Suffix|Initials|Nickname|Short Name|Maiden Name|First Name|Middle Name|Last Name|Phonetic First Name|Phonetic Middle Name|Phonetic Last Name|File As|Birthday|Gender|Location|Occupation|Notes|Photo|Group Membership|Labels|Organization.*|E-?mail \d+.*|Phone \d+.*|Address \d+.*|Website \d+.*|IM \d+.*|Relation \d+.*|Event \d+.*|Custom Field \d+.*)$/i;
@@ -334,9 +344,10 @@ export default function App() {
       const o = {};
       preserved.forEach((h) => (o[h] = r[h] ?? ""));
 
-      const nm = getName(r, map);
+      const nm = effectiveName(r, map, r._e);
+      const origNm = getName(r, map);
       const hasFirst = (o["First Name"] || "").trim() || (o["Given Name"] || "").trim();
-      if (!hasFirst && nm) {
+      if (nm && (nm !== origNm || !hasFirst)) {
         const p = nm.split(/\s+/);
         o["First Name"] = p[0] || "";
         o["Last Name"] = p.slice(1).join(" ") || "";
@@ -377,6 +388,7 @@ export default function App() {
       headers.forEach((h) => (base[h] = r[h]));
       return {
         ...base,
+        "Enriched Name": effectiveName(r, map, r._e) || "",
         "Enriched Title": eff.jobTitle || "",
         "Enriched Company": eff.company || "",
         "Location": eff.location || "",
@@ -506,7 +518,7 @@ export default function App() {
                 <div></div><div></div><div>Contact</div><div>Role / Employer</div><div>Location</div><div>Result</div>
               </div>
               {rows.map((r) => {
-                const nm = getName(r, map);
+                const nm = effectiveName(r, map, r._e);
                 const f = effective(r._e);
                 const isOpen = open === r.__id;
                 const [chipCls, chipTxt] = chipFor(r._e);
@@ -560,6 +572,9 @@ export default function App() {
               thorough, multi-angle search — more web lookups, your other CSV fields fed in as hints, and a stronger model
               if you set <code>AI_MODEL_DEEP</code>. Use the toolbar button to sweep them all at once, or <b>Deep check</b>
               on a single contact.<br /><br />
+              <b>Names.</b> Enrichment also fixes the name — correcting ALL-CAPS/lowercase, “Last, First” order, and names
+              that are really just an email — and replaces it with the correctly-spelled full name when the AI confidently
+              identifies the person. Override any name in the contact's <b>Full name</b> field.<br /><br />
               <b>Correct or reject.</b> Open any contact to type your own values (these always win), or hit
               <b> Reject enrichment</b> to drop the machine’s data for that person. Your typed corrections survive a reject,
               so you can reject a bad guess and enter the right answer.<br /><br />
@@ -605,6 +620,12 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace, onDeep }) {
           )}
           {e.rejected && (
             <div className="cd-banner"><Ban size={15} /> Enrichment rejected — only original data and your edits will export.</div>
+          )}
+          {!e.rejected && e.data?.name && e.data.name !== (e.data.originalName || "") && !(e.edits?.name || "").trim() && (
+            <div className="cd-banner">
+              <Pencil size={15} /> Name set to <b style={{ color: "var(--ink)" }}>{e.data.name}</b>
+              {e.data.originalName ? <> (was “{e.data.originalName}”)</> : <> (from email)</>}
+            </div>
           )}
 
           {!e.rejected && f.summary && <div className="cd-sum">{f.summary}</div>}
