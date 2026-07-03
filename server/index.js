@@ -8,6 +8,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, "..", "dist");
 const PORT = process.env.PORT || 8787;
 
+// Optional HTTP Basic Auth over the whole app (frontend + API). Enabled when a password is set.
+const AUTH_USER = process.env.AUTH_USER || "admin";
+const AUTH_PASS = process.env.AUTH_PASSWORD || "";
+const AUTH_ON = Boolean(AUTH_PASS);
+
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a)), bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
 const PROVIDER = (process.env.AI_PROVIDER || "").toLowerCase();
 const KEY = process.env.AI_API_KEY || "";
 const SEARCH = (process.env.AI_WEB_SEARCH ?? "true").toLowerCase() !== "false";
@@ -252,10 +263,11 @@ async function gemini({ prompt, model, search, maxTokens }) {
 
 const PROVIDERS = { anthropic, openai, gemini };
 
-async function callAI(ctx, { deep = false, extra = null } = {}) {
+async function callAI(ctx, { deep = false, extra = null, forceSearch = false } = {}) {
   const fn = PROVIDERS[PROVIDER];
   if (!fn) throw new Error("unknown provider: " + PROVIDER);
   const lim = deep ? LIMITS.deep : LIMITS.normal;
+  const useSearch = forceSearch || SEARCH;
   const args = {
     prompt: buildPrompt(ctx, { deep, extra }),
     model: deep ? MODEL_DEEP : MODEL,
@@ -264,9 +276,10 @@ async function callAI(ctx, { deep = false, extra = null } = {}) {
   };
   let text;
   try {
-    text = await fn({ ...args, search: SEARCH });
+    text = await fn({ ...args, search: useSearch });
   } catch (e) {
-    if (SEARCH) text = await fn({ ...args, search: false }); // model rejected the search tool → retry plain
+    // model rejected the search tool → retry plain, unless search was explicitly required
+    if (useSearch && !forceSearch) text = await fn({ ...args, search: false });
     else throw e;
   }
   return extractJson(text);
@@ -274,6 +287,22 @@ async function callAI(ctx, { deep = false, extra = null } = {}) {
 
 /* ------------------------------ server ------------------------------ */
 const app = express();
+
+// Gate everything behind Basic Auth when AUTH_PASSWORD is configured.
+app.use((req, res, next) => {
+  if (!AUTH_ON) return next();
+  const m = (req.headers.authorization || "").match(/^Basic\s+(.+)$/i);
+  if (m) {
+    const dec = Buffer.from(m[1], "base64").toString();
+    const i = dec.indexOf(":");
+    if (i >= 0 && safeEqual(dec.slice(0, i), AUTH_USER) && safeEqual(dec.slice(i + 1), AUTH_PASS)) {
+      return next();
+    }
+  }
+  res.set("WWW-Authenticate", 'Basic realm="Contact Dossier", charset="UTF-8"');
+  return res.status(401).send("Authentication required.");
+});
+
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/config", (_req, res) => {
@@ -287,8 +316,12 @@ app.get("/api/config", (_req, res) => {
 });
 
 app.post("/api/enrich", async (req, res) => {
-  const { name = "", email = "", company = "", deep = false, extra = null } = req.body || {};
-  const data = deriveLocal({ email, company });
+  const { name = "", email = "", company = "", deep = false, extra = null, requireSearch = false } = req.body || {};
+
+  // requireSearch = do NOT derive company/website/logo/photo from the email; only accept what a search finds.
+  const data = requireSearch
+    ? { jobTitle: null, company: null, location: null, linkedinUrl: null, links: [], summary: null, photo: null, logo: null, website: null }
+    : deriveLocal({ email, company });
 
   const original = String(name || "").trim();
   const cleaned = cleanName(name, email);
@@ -301,7 +334,7 @@ app.post("/api/enrich", async (req, res) => {
 
   if (CONFIGURED) {
     try {
-      const ai = await callAI({ name: cleaned || original, email, company }, { deep, extra });
+      const ai = await callAI({ name: cleaned || original, email, company }, { deep, extra, forceSearch: requireSearch });
       if (ai && ai.confidence !== "none") {
         for (const k of ["jobTitle", "company", "location", "linkedinUrl", "summary"]) {
           if (ai[k]) { data[k] = ai[k]; usedAI = true; }
@@ -319,7 +352,8 @@ app.post("/api/enrich", async (req, res) => {
     }
   }
 
-  res.json({ ...data, source: usedAI ? (deep ? "ai-deep" : "ai") : "derived", aiError });
+  const source = usedAI ? (deep ? "ai-deep" : "ai") : (requireSearch ? "none" : "derived");
+  res.json({ ...data, source, aiError });
 });
 
 if (fs.existsSync(DIST)) {
@@ -332,6 +366,7 @@ if (fs.existsSync(DIST)) {
 
 app.listen(PORT, () => {
   console.log(`Contact Dossier listening on :${PORT}`);
+  console.log(`Basic auth: ${AUTH_ON ? `on (user "${AUTH_USER}")` : "off — set AUTH_PASSWORD to require login"}`);
   console.log(CONFIGURED
     ? `AI provider: ${PROVIDER} (${MODEL}${MODEL_DEEP !== MODEL ? `, deep: ${MODEL_DEEP}` : ""}), web search ${SEARCH ? "on" : "off"}`
     : `No AI provider configured — serving email-derived data only.`);

@@ -72,7 +72,7 @@ const STYLE = `
   letter-spacing:.05em;color:#7a560f;background:var(--signal-soft);border-radius:3px;padding:4px 8px;}
 
 .cd-table{margin-top:18px;background:var(--paper);border:1px solid var(--line);border-radius:6px;overflow:hidden;}
-.cd-trow{display:grid;grid-template-columns:38px 46px 1.4fr 1.6fr 1.1fr 100px;gap:0;
+.cd-trow{display:grid;grid-template-columns:36px 34px 44px 1.4fr 1.5fr 1.05fr 100px;gap:0;
   align-items:center;border-bottom:1px solid var(--line);}
 .cd-trow.h{background:var(--ink);color:#fff;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;}
 .cd-trow.h>div{padding:11px 12px;}
@@ -133,6 +133,28 @@ const STYLE = `
 .cd-notebody{padding:0 16px 16px 41px;font-size:12.8px;line-height:1.6;color:var(--muted);}
 .cd-notebody b{color:var(--ink2);font-weight:600;}
 .cd-notebody code{background:#eee;border-radius:3px;padding:1px 5px;font-size:11.5px;}
+
+.cd-controls{margin-top:12px;display:flex;align-items:center;gap:12px 18px;flex-wrap:wrap;justify-content:space-between;}
+.cd-pills{display:flex;gap:6px;flex-wrap:wrap;}
+.cd-pill{font-size:12px;padding:6px 11px;border:1px solid var(--line);border-radius:999px;background:var(--paper);
+  cursor:pointer;color:var(--muted);display:inline-flex;gap:6px;align-items:center;transition:.12s;}
+.cd-pill:hover{background:#fff;}
+.cd-pill.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+.cd-pill b{font-weight:700;}
+.cd-pill.dim{opacity:.45;}
+.cd-selinfo{font-size:12.5px;color:var(--muted);display:flex;gap:12px;align-items:center;}
+.cd-link{color:var(--signal);cursor:pointer;font-weight:600;}
+.cd-ck{width:15px;height:15px;cursor:pointer;accent-color:var(--ink);vertical-align:middle;}
+.cd-empty{padding:40px;text-align:center;color:var(--muted);font-size:13px;grid-column:1/-1;}
+
+.cd-toggle{display:flex;align-items:center;gap:12px;margin-top:14px;font-size:13px;color:var(--ink2);}
+.cd-toggle .sub{display:block;font-size:11.5px;color:var(--muted);margin-top:2px;}
+.cd-switch{position:relative;width:38px;height:22px;flex:0 0 auto;}
+.cd-switch input{opacity:0;width:0;height:0;}
+.cd-slider{position:absolute;inset:0;background:#cfcfca;border-radius:999px;transition:.15s;cursor:pointer;}
+.cd-slider:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s;}
+.cd-switch input:checked + .cd-slider{background:var(--signal);}
+.cd-switch input:checked + .cd-slider:before{transform:translateX(16px);}
 `;
 
 /* --------------------------- helpers --------------------------- */
@@ -198,6 +220,17 @@ function tierOf(e) {
 }
 const isWeak = (e) => tierOf(e) === "derived" || tierOf(e) === "minimal";
 
+const FILTERS = [
+  ["all", "All"], ["enriched", "Enriched"], ["derived", "Derived"],
+  ["minimal", "Minimal"], ["pending", "Not enriched"], ["rejected", "Rejected"],
+];
+function inFilter(e, f) {
+  if (f === "all") return true;
+  const t = tierOf(e);
+  if (f === "pending") return t === "idle" || t === "loading" || t === "error";
+  return t === f;
+}
+
 /* effective display name: manual edit wins; reject reverts to original; else server's corrected name */
 function effectiveName(row, map, e) {
   const ed = e.edits || {};
@@ -231,8 +264,12 @@ export default function App() {
   const [showEngine, setShowEngine] = useState(false);
   const [cfg, setCfg] = useState(null);
   const [fileName, setFileName] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [selected, setSelected] = useState(() => new Set());
+  const [requireSearch, setRequireSearch] = useState(false);
   const stopRef = useRef(false);
   const fileRef = useRef(null);
+  const selAllRef = useRef(null);
 
   useEffect(() => {
     fetch("/api/config").then((r) => r.json()).then(setCfg).catch(() => setCfg({ configured: false }));
@@ -242,6 +279,34 @@ export default function App() {
     () => rows.filter((r) => r._e && r._e.status === "done").length, [rows]
   );
   const weakRows = useMemo(() => rows.filter((r) => isWeak(r._e)), [rows]);
+
+  const counts = useMemo(() => {
+    const c = { all: rows.length, enriched: 0, derived: 0, minimal: 0, pending: 0, rejected: 0 };
+    rows.forEach((r) => {
+      const t = tierOf(r._e);
+      if (t === "enriched") c.enriched++;
+      else if (t === "derived") c.derived++;
+      else if (t === "minimal") c.minimal++;
+      else if (t === "rejected") c.rejected++;
+      else c.pending++;
+    });
+    return c;
+  }, [rows]);
+
+  const filteredRows = useMemo(() => rows.filter((r) => inFilter(r._e, filter)), [rows, filter]);
+
+  const allFilteredSelected = filteredRows.length > 0 && filteredRows.every((r) => selected.has(r.__id));
+  useEffect(() => {
+    if (selAllRef.current) selAllRef.current.indeterminate = selected.size > 0 && !allFilteredSelected;
+  }, [selected, allFilteredSelected]);
+
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () => setSelected((s) => {
+    const n = new Set(s);
+    if (allFilteredSelected) filteredRows.forEach((r) => n.delete(r.__id));
+    else filteredRows.forEach((r) => n.add(r.__id));
+    return n;
+  });
 
   const handleFile = useCallback((file) => {
     if (!file) return;
@@ -255,6 +320,8 @@ export default function App() {
         setRows(res.data.map((r, i) => ({ ...r, __id: i, _e: { status: "idle", edits: {}, rejected: false } })));
         setOpen(null);
         setProg({ done: 0, total: 0 });
+        setSelected(new Set());
+        setFilter("all");
       },
     });
   }, []);
@@ -263,7 +330,7 @@ export default function App() {
     const { __id, _e, ...extra } = row;
     const body = {
       name: getName(row, map), email: row[map.email] || "", company: row[map.company] || "",
-      deep, extra,
+      deep, extra, requireSearch,
     };
     try {
       const res = await fetch("/api/enrich", {
@@ -275,7 +342,7 @@ export default function App() {
     } catch (e) {
       return { status: "error", error: String(e.message || e), data: {} };
     }
-  }, [map]);
+  }, [map, requireSearch]);
 
   // state mutators that preserve manual edits
   const setStatus = (id, status) =>
@@ -338,8 +405,9 @@ export default function App() {
   };
 
   const exportGoogle = useCallback(() => {
+    const scope = selected.size ? rows.filter((r) => selected.has(r.__id)) : rows;
     const preserved = headers.filter((h) => GCOL.test(h));
-    const data = rows.map((r) => {
+    const data = scope.map((r) => {
       const eff = effective(r._e);
       const o = {};
       preserved.forEach((h) => (o[h] = r[h] ?? ""));
@@ -379,10 +447,11 @@ export default function App() {
     const inFields = new Set(GOOGLE_FIELDS);
     const extra = preserved.filter((h) => !inFields.has(h));
     download(Papa.unparse({ fields: [...GOOGLE_FIELDS, ...extra], data }), "-google.csv");
-  }, [rows, headers, map, fileName]);
+  }, [rows, headers, map, fileName, selected]);
 
   const exportFull = useCallback(() => {
-    const data = rows.map((r) => {
+    const scope = selected.size ? rows.filter((r) => selected.has(r.__id)) : rows;
+    const data = scope.map((r) => {
       const eff = effective(r._e);
       const base = {};
       headers.forEach((h) => (base[h] = r[h]));
@@ -400,9 +469,9 @@ export default function App() {
       };
     });
     download(Papa.unparse(data), "-enriched.csv");
-  }, [rows, headers, map, fileName]);
+  }, [rows, headers, map, fileName, selected]);
 
-  const reset = () => { setRows([]); setHeaders([]); setMap({}); setFileName(""); setOpen(null); };
+  const reset = () => { setRows([]); setHeaders([]); setMap({}); setFileName(""); setOpen(null); setSelected(new Set()); setFilter("all"); };
   const notConfigured = cfg && !cfg.configured;
 
   return (
@@ -465,10 +534,10 @@ export default function App() {
                   <Radar size={15} /> Deep re-check{weakRows.length ? ` (${weakRows.length})` : ""}
                 </button>
                 <button className="cd-btn alt" onClick={exportGoogle} disabled={!rows.length} title="CSV ready for Google Contacts import">
-                  <Download size={15} /> Google CSV
+                  <Download size={15} /> Google CSV{selected.size ? ` (${selected.size})` : ""}
                 </button>
                 <button className="cd-btn alt" onClick={exportFull} disabled={!rows.length} title="Original columns plus enrichment columns">
-                  <Download size={15} /> Full CSV
+                  <Download size={15} /> Full CSV{selected.size ? ` (${selected.size})` : ""}
                 </button>
                 <button className="cd-btn alt cd-iconbtn" onClick={reset} title="Load a different file">
                   <X size={15} />
@@ -499,8 +568,43 @@ export default function App() {
                   <p>Job titles, locations, and profiles come from <b>{cfg.provider}</b> using your own key, which stays
                     on the server. Change provider, model, or key in <code>.env</code> and restart to take effect.</p>
                 )}
+                <label className="cd-toggle">
+                  <span className="cd-switch">
+                    <input type="checkbox" checked={requireSearch} onChange={(e) => setRequireSearch(e.target.checked)} />
+                    <span className="cd-slider" />
+                  </span>
+                  <span>
+                    Require search — no email-derived data
+                    <span className="sub">When on, company/website/logo/photo are only kept if a live search finds them (needs a provider). Off = fast domain-derived data plus AI.</span>
+                  </span>
+                </label>
               </div>
             )}
+
+            <div className="cd-controls">
+              <div className="cd-pills">
+                {FILTERS.map(([key, label]) => {
+                  const n = counts[key] ?? 0;
+                  return (
+                    <button key={key}
+                      className={"cd-pill" + (filter === key ? " active" : "") + (key !== "all" && n === 0 ? " dim" : "")}
+                      onClick={() => setFilter(key)}>
+                      {label} <b>{n}</b>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="cd-selinfo">
+                {selected.size > 0 ? (
+                  <>
+                    <span>{selected.size} selected</span>
+                    <span className="cd-link" onClick={() => setSelected(new Set())}>Clear</span>
+                  </>
+                ) : (
+                  <span>Tick rows to export only those; none ticked exports all.</span>
+                )}
+              </div>
+            </div>
 
             {running && (
               <div className="cd-bar" style={{ marginTop: 10 }}>
@@ -515,9 +619,13 @@ export default function App() {
 
             <div className="cd-table">
               <div className="cd-trow h">
+                <div><input ref={selAllRef} className="cd-ck" type="checkbox" checked={allFilteredSelected} onChange={toggleAll} title="Select all in view" /></div>
                 <div></div><div></div><div>Contact</div><div>Role / Employer</div><div>Location</div><div>Result</div>
               </div>
-              {rows.map((r) => {
+              {filteredRows.length === 0 && (
+                <div className="cd-trow"><div className="cd-empty">No contacts in this view.</div></div>
+              )}
+              {filteredRows.map((r) => {
                 const nm = effectiveName(r, map, r._e);
                 const f = effective(r._e);
                 const isOpen = open === r.__id;
@@ -525,6 +633,9 @@ export default function App() {
                 return (
                   <React.Fragment key={r.__id}>
                     <div className={"cd-trow body" + (r._e.rejected ? " rej" : "")} onClick={() => setOpen(isOpen ? null : r.__id)}>
+                      <div onClick={(ev) => ev.stopPropagation()}>
+                        <input className="cd-ck" type="checkbox" checked={selected.has(r.__id)} onChange={() => toggleSel(r.__id)} />
+                      </div>
                       <div>{isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</div>
                       <div><Avatar photo={f.photo} logo={f.logo} name={nm} small /></div>
                       <div>

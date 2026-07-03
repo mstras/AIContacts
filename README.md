@@ -93,6 +93,8 @@ All config is via environment variables (see `.env.example`):
 | `AI_MODEL_DEEP` | = `AI_MODEL` | Optional stronger model used only for **Deep check** passes (more searches + bigger budget). |
 | `AI_WEB_SEARCH` | `true` | Use the provider's web-search grounding. Auto-retries without it if the model rejects the tool. |
 | `AI_TIMEOUT_MS` | `60000` | Per-request timeout for the AI call. |
+| `AUTH_USER` | `admin` | Username for Basic Auth (only used if a password is set). |
+| `AUTH_PASSWORD` | _(blank)_ | Set this to require a login for the whole app (frontend **and** API). Blank = no auth. Pair with HTTPS. |
 | `PORT` | `8787` | Listen port. |
 
 After changing `.env`, restart: `docker compose up -d`.
@@ -133,6 +135,20 @@ Any CSV with a header row. The app auto-detects common column names and lets you
 - **Full CSV** — your original columns plus enrichment as extra columns.
 
 Both honor your manual edits and per-contact rejections.
+
+### Selecting, filtering, and search-only mode
+
+- **Select for export** — tick the checkbox on any rows (or the header box to select everything in the current view). With a selection active, both exports include **only** the ticked contacts; with nothing ticked, they export everything.
+- **Filter by status** — the pills (All / Enriched / Derived / Minimal / Not enriched / Rejected) split contacts by how well they enriched, so you can e.g. work only the ones that came back empty.
+- **Require search** — a toggle in the engine panel (gear icon). When on, the app does **not** fill company/website/logo/photo from the email domain; those fields are only kept if a live web search actually finds them (needs a configured provider). Off is the fast default: domain-derived data plus AI.
+
+## Security
+
+By default the app has no authentication — fine on a trusted LAN, not for the open internet. Set
+`AUTH_PASSWORD` (and optionally `AUTH_USER`) to require HTTP Basic Auth on **every** route, including
+the API, so a browser login is needed before anything loads. This is deliberately simple; for anything
+exposed publicly, also terminate **HTTPS** at your reverse proxy (Basic Auth sends credentials base64-encoded,
+so it must run over TLS) and consider your proxy's own access controls.
 
 ## A note on accuracy & privacy
 
