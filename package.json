@@ -1,9 +1,9 @@
 {
-  "name": "contact-dossier",
-  "version": "1.0.0",
+  "name": "aicontacts",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Upload a contacts CSV and enrich it via your own AI provider (Anthropic, OpenAI, or Gemini). Self-hosted, Dockerized.",
+  "description": "Enrich your contacts via your own AI provider (Anthropic, OpenAI, or Gemini) and sync with Google Contacts. Self-hosted, Dockerized.",
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "node server/index.js",
@@ -13,6 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "better-sqlite3": "^11.8.1",
     "express": "^4.19.2"
   },
   "devDependencies": {

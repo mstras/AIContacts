@@ -4,6 +4,7 @@ import {
   Upload, Search, Download, X, ChevronDown, ChevronRight, Settings,
   Link as LinkIcon, MapPin, Briefcase, StopCircle, Info, RotateCw, Globe, ExternalLink,
   Cpu, AlertTriangle, Ban, Undo2, Pencil, Radar,
+  RefreshCw, LogOut, LogIn, Cloud, CloudUpload, UploadCloud,
 } from "lucide-react";
 
 const POOL = 4; // concurrent enrichment requests
@@ -26,6 +27,11 @@ const STYLE = `
 .cd-sub{font-size:12.5px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-top:6px;}
 .cd-stamp{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
   border:1px solid var(--line);border-radius:2px;padding:5px 9px;background:var(--paper);}
+.cd-acct{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);}
+.cd-acct img{width:26px;height:26px;border-radius:50%;}
+.cd-acct .em{color:var(--ink);font-weight:600;}
+.cd-acct button{background:none;border:none;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:5px;font-size:12.5px;}
+.cd-acct button:hover{color:var(--ink);}
 
 .cd-drop{margin-top:26px;border:1.5px dashed #b9bbbd;border-radius:6px;background:var(--paper);
   padding:46px 24px;text-align:center;cursor:pointer;transition:.15s;}
@@ -34,6 +40,21 @@ const STYLE = `
 .cd-drop p{font-size:13px;color:var(--muted);margin:0;}
 .cd-circle{width:46px;height:46px;border-radius:50%;background:var(--ink);color:#fff;
   display:inline-flex;align-items:center;justify-content:center;}
+
+.cd-picker{margin-top:26px;display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.cd-card{border:1px solid var(--line);border-radius:8px;background:var(--paper);padding:28px 22px;
+  text-align:center;cursor:pointer;transition:.15s;}
+.cd-card:hover{border-color:var(--signal);background:#fffdf7;}
+.cd-card h3{margin:14px 0 5px;font-size:16px;font-weight:600;}
+.cd-card p{margin:0;font-size:12.5px;color:var(--muted);line-height:1.5;}
+@media(max-width:640px){.cd-picker{grid-template-columns:1fr;}}
+
+.cd-login{max-width:430px;margin:13vh auto 0;text-align:center;}
+.cd-login .cd-word{font-size:34px;}
+.cd-login p{color:var(--muted);font-size:13.5px;margin:12px 0 22px;line-height:1.55;}
+.cd-gbtn{display:inline-flex;align-items:center;gap:10px;font-size:14px;font-weight:600;padding:11px 20px;
+  border-radius:6px;border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;text-decoration:none;}
+.cd-gbtn:hover{background:var(--ink2);}
 
 .cd-bar{margin-top:22px;background:var(--paper);border:1px solid var(--line);border-radius:6px;
   padding:14px 16px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;}
@@ -44,6 +65,9 @@ const STYLE = `
   background:#fff;color:var(--ink);}
 .cd-field select{min-width:128px;}
 .cd-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.cd-syncbar{display:flex;align-items:center;gap:10px;flex:1;min-width:200px;font-size:12.5px;color:var(--muted);}
+.cd-syncbar b{color:var(--ink);font-weight:600;}
+.spin{animation:spin 1s linear infinite;}@keyframes spin{to{transform:rotate(360deg);}}
 
 .cd-btn{font-size:13px;font-weight:600;padding:9px 16px;border-radius:5px;border:1px solid var(--ink);
   background:var(--ink);color:#fff;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.12s;}
@@ -55,6 +79,8 @@ const STYLE = `
 .cd-btn.warn:hover{filter:brightness(.95);}
 .cd-btn.danger{background:#fff;color:var(--bad);border-color:#e3c4bc;}
 .cd-btn.danger:hover{background:#fbf0ed;}
+.cd-btn.go{background:#1a6b3a;border-color:#1a6b3a;}
+.cd-btn.go:hover{background:#155e32;}
 .cd-iconbtn{padding:9px 11px;}
 
 .cd-prog{font-size:12px;color:var(--muted);min-width:140px;}
@@ -169,6 +195,7 @@ function detectColumns(headers) {
     company: findCol(headers, [/company/i, /organi[sz]ation/i, /employer/i, /^org$/i]),
   };
 }
+const GOOGLE_MAP = { name: "name", email: "email", company: "company" };
 
 const getName = (row, m) => {
   if (m.name && row[m.name]) return String(row[m.name]).trim();
@@ -212,7 +239,7 @@ function chipFor(e) {
 /* tier of a row: enriched | derived | minimal | idle | loading | error | rejected */
 function tierOf(e) {
   if (e.rejected) return "rejected";
-  if (e.status !== "done") return e.status; // idle / loading / error
+  if (e.status !== "done") return e.status;
   const f = effective(e);
   if (f.jobTitle || f.location) return "enriched";
   if (f.company || f.photo || f.website) return "derived";
@@ -231,7 +258,6 @@ function inFilter(e, f) {
   return t === f;
 }
 
-/* effective display name: manual edit wins; reject reverts to original; else server's corrected name */
 function effectiveName(row, map, e) {
   const ed = e.edits || {};
   if (ed.name && String(ed.name).trim()) return String(ed.name).trim();
@@ -241,7 +267,22 @@ function effectiveName(row, map, e) {
   return (dn && String(dn).trim()) ? String(dn).trim() : orig;
 }
 
-/* recognized Google Contacts CSV columns — passed through untouched on export */
+// contact can be pushed to Google if it has any effective data and isn't rejected
+function pushable(r) {
+  if (r._e.rejected) return false;
+  const f = effective(r._e);
+  return !!(f.jobTitle || f.company || f.location || f.linkedinUrl || f.website || f.summary || (r._e.edits && r._e.edits.name));
+}
+
+// merge an enrich result into the previous _e, preserving edits + an existing (e.g. Google) photo
+function mergeApplied(prevE, result) {
+  const data = result.data || {};
+  const prevPhoto = prevE && prevE.data && prevE.data.photo;
+  const mergedData = (!data.photo && prevPhoto) ? { ...data, photo: prevPhoto } : data;
+  return { ...result, data: mergedData, edits: (prevE && prevE.edits) || {}, rejected: false };
+}
+
+/* recognized Google Contacts CSV columns — passed through untouched on CSV export */
 const GCOL = /^(Name|Given Name|Additional Name|Family Name|Yomi Name|Name Prefix|Name Suffix|Initials|Nickname|Short Name|Maiden Name|First Name|Middle Name|Last Name|Phonetic First Name|Phonetic Middle Name|Phonetic Last Name|File As|Birthday|Gender|Location|Occupation|Notes|Photo|Group Membership|Labels|Organization.*|E-?mail \d+.*|Phone \d+.*|Address \d+.*|Website \d+.*|IM \d+.*|Relation \d+.*|Event \d+.*|Custom Field \d+.*)$/i;
 
 const GOOGLE_FIELDS = [
@@ -251,8 +292,10 @@ const GOOGLE_FIELDS = [
   "Photo", "Notes", "Labels",
 ];
 
-/* ----------------------------- app ----------------------------- */
+/* ============================= app ============================= */
 export default function App() {
+  const [me, setMe] = useState(null);           // null=loading, {...}
+  const [source, setSource] = useState(null);   // null | 'csv' | 'google'
   const [rows, setRows] = useState([]);
   const [headers, setHeaders] = useState([]);
   const [map, setMap] = useState({});
@@ -267,19 +310,23 @@ export default function App() {
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(() => new Set());
   const [requireSearch, setRequireSearch] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [syncedAt, setSyncedAt] = useState(null);
+  const [msg, setMsg] = useState("");
   const stopRef = useRef(false);
   const fileRef = useRef(null);
   const selAllRef = useRef(null);
+  const rowsRef = useRef(rows);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   useEffect(() => {
+    fetch("/api/me").then((r) => r.json()).then(setMe).catch(() => setMe({ googleEnabled: false, local: true }));
     fetch("/api/config").then((r) => r.json()).then(setCfg).catch(() => setCfg({ configured: false }));
   }, []);
 
-  const enrichedCount = useMemo(
-    () => rows.filter((r) => r._e && r._e.status === "done").length, [rows]
-  );
+  const enrichedCount = useMemo(() => rows.filter((r) => r._e && r._e.status === "done").length, [rows]);
   const weakRows = useMemo(() => rows.filter((r) => isWeak(r._e)), [rows]);
-
   const counts = useMemo(() => {
     const c = { all: rows.length, enriched: 0, derived: 0, minimal: 0, pending: 0, rejected: 0 };
     rows.forEach((r) => {
@@ -292,7 +339,6 @@ export default function App() {
     });
     return c;
   }, [rows]);
-
   const filteredRows = useMemo(() => rows.filter((r) => inFilter(r._e, filter)), [rows, filter]);
 
   const allFilteredSelected = filteredRows.length > 0 && filteredRows.every((r) => selected.has(r.__id));
@@ -308,9 +354,69 @@ export default function App() {
     return n;
   });
 
+  /* --------- persistence (Google mode only) --------- */
+  const persistEnrichment = useCallback((row, e) => {
+    if (source !== "google" || !row.resourceName) return;
+    fetch("/api/contacts", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resourceName: row.resourceName, enrichment: e }),
+    }).catch(() => {});
+  }, [source]);
+
+  /* --------- sources --------- */
+  const toRows = (contacts) => contacts.map((c, i) => ({
+    __id: i, resourceName: c.resourceName, etag: c.etag,
+    name: c.name || "", email: c.email || "", company: c.company || "", title: c.title || "",
+    _e: c.enrichment || {
+      status: "idle", edits: {}, rejected: false,
+      data: { photo: c.photo || null, company: c.company || null },
+    },
+  }));
+
+  const syncGoogle = useCallback(async () => {
+    setSyncing(true); setMsg("Pulling contacts from Google…");
+    try {
+      const r = await fetch("/api/sync", { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "sync failed");
+      setRows(toRows(d.contacts)); setSyncedAt(d.syncedAt);
+      setMsg(`Pulled ${d.pulled} contacts from Google.`);
+    } catch (e) { setMsg("Sync failed: " + String(e.message || e)); }
+    setSyncing(false); setSelected(new Set()); setFilter("all"); setOpen(null);
+  }, []);
+
+  const openGoogle = useCallback(async () => {
+    setSource("google"); setFileName("google-contacts"); setMap(GOOGLE_MAP); setHeaders([]);
+    try {
+      const r = await fetch("/api/contacts");
+      const d = await r.json();
+      if (r.ok && d.contacts && d.contacts.length) { setRows(toRows(d.contacts)); setSyncedAt(d.syncedAt); }
+      else await syncGoogle();
+    } catch { await syncGoogle(); }
+  }, [syncGoogle]);
+
+  const pushGoogle = useCallback(async () => {
+    const scope = selected.size ? rows.filter((r) => selected.has(r.__id)) : rows.filter(pushable);
+    if (!scope.length) { setMsg("Nothing to push — enrich or select some contacts first."); return; }
+    setPushing(true); setMsg(`Pushing ${scope.length} contact(s) to Google…`);
+    try {
+      const r = await fetch("/api/push", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resourceNames: scope.map((x) => x.resourceName) }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "push failed");
+      setMsg(`Pushed ${d.pushed} · skipped ${d.skipped} · failed ${d.failed}.`);
+    } catch (e) { setMsg("Push failed: " + String(e.message || e)); }
+    setPushing(false);
+  }, [rows, selected]);
+
+  const logout = async () => { await fetch("/auth/logout", { method: "POST" }).catch(() => {}); location.reload(); };
+
+  /* --------- CSV --------- */
   const handleFile = useCallback((file) => {
     if (!file) return;
-    setFileName(file.name);
+    setSource("csv"); setFileName(file.name);
     Papa.parse(file, {
       header: true, skipEmptyLines: true,
       complete: (res) => {
@@ -318,16 +424,14 @@ export default function App() {
         setHeaders(hs);
         setMap(detectColumns(hs));
         setRows(res.data.map((r, i) => ({ ...r, __id: i, _e: { status: "idle", edits: {}, rejected: false } })));
-        setOpen(null);
-        setProg({ done: 0, total: 0 });
-        setSelected(new Set());
-        setFilter("all");
+        setOpen(null); setProg({ done: 0, total: 0 }); setSelected(new Set()); setFilter("all");
       },
     });
   }, []);
 
+  /* --------- enrichment --------- */
   const enrichOne = useCallback(async (row, deep = false) => {
-    const { __id, _e, ...extra } = row;
+    const { __id, _e, resourceName, etag, ...extra } = row;
     const body = {
       name: getName(row, map), email: row[map.email] || "", company: row[map.company] || "",
       deep, extra, requireSearch,
@@ -344,21 +448,24 @@ export default function App() {
     }
   }, [map, requireSearch]);
 
-  // state mutators that preserve manual edits
   const setStatus = (id, status) =>
     setRows((rs) => rs.map((r) => (r.__id === id ? { ...r, _e: { ...r._e, status } } : r)));
   const applyResult = (id, result) =>
-    setRows((rs) => rs.map((r) => (r.__id === id ? { ...r, _e: { ...result, edits: r._e.edits || {}, rejected: false } } : r)));
-  const commitEdits = (id, edits) =>
+    setRows((rs) => rs.map((r) => (r.__id === id ? { ...r, _e: mergeApplied(r._e, result) } : r)));
+  const commitEdits = (id, edits) => {
     setRows((rs) => rs.map((r) => (r.__id === id ? { ...r, _e: { ...r._e, edits } } : r)));
-  const setRejected = (id, rejected) =>
+    const row = rowsRef.current.find((r) => r.__id === id);
+    if (row) persistEnrichment(row, { ...row._e, edits });
+  };
+  const setRejected = (id, rejected) => {
     setRows((rs) => rs.map((r) => (r.__id === id ? { ...r, _e: { ...r._e, rejected } } : r)));
+    const row = rowsRef.current.find((r) => r.__id === id);
+    if (row) persistEnrichment(row, { ...row._e, rejected });
+  };
 
   const processTargets = useCallback(async (targets, deep) => {
     if (!targets.length) return;
-    stopRef.current = false;
-    setRunning(true);
-    setProg({ done: 0, total: targets.length });
+    stopRef.current = false; setRunning(true); setProg({ done: 0, total: targets.length });
     let done = 0;
     const it = targets[Symbol.iterator]();
     const worker = async () => {
@@ -367,41 +474,41 @@ export default function App() {
         setStatus(row.__id, "loading");
         const result = await enrichOne(row, deep);
         applyResult(row.__id, result);
-        done += 1;
-        setProg({ done, total: targets.length });
+        persistEnrichment(row, mergeApplied(row._e, result));
+        done += 1; setProg({ done, total: targets.length });
       }
     };
     await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, worker));
     setRunning(false);
-  }, [enrichOne]);
+  }, [enrichOne, persistEnrichment]);
 
   const runAll = useCallback(
     () => processTargets(rows.filter((r) => r._e.status !== "done" && !r._e.rejected), false),
     [processTargets, rows]);
-
   const runWeakDeep = useCallback(
     () => processTargets(rows.filter((r) => isWeak(r._e)), true),
     [processTargets, rows]);
-
   const runRow = useCallback(async (row) => {
     setStatus(row.__id, "loading");
-    applyResult(row.__id, await enrichOne(row, false));
-  }, [enrichOne]);
-
+    const result = await enrichOne(row, false);
+    applyResult(row.__id, result);
+    persistEnrichment(row, mergeApplied(row._e, result));
+  }, [enrichOne, persistEnrichment]);
   const deepRow = useCallback(async (row) => {
     setStatus(row.__id, "loading");
-    applyResult(row.__id, await enrichOne(row, true));
-  }, [enrichOne]);
+    const result = await enrichOne(row, true);
+    applyResult(row.__id, result);
+    persistEnrichment(row, mergeApplied(row._e, result));
+  }, [enrichOne, persistEnrichment]);
 
-  /* --------- exports --------- */
+  /* --------- CSV exports --------- */
   const download = (csv, suffix) => {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = (fileName.replace(/\.csv$/i, "") || "contacts") + suffix;
-    a.click();
-    URL.revokeObjectURL(url);
+    a.click(); URL.revokeObjectURL(url);
   };
 
   const exportGoogle = useCallback(() => {
@@ -411,14 +518,12 @@ export default function App() {
       const eff = effective(r._e);
       const o = {};
       preserved.forEach((h) => (o[h] = r[h] ?? ""));
-
       const nm = effectiveName(r, map, r._e);
       const origNm = getName(r, map);
       const hasFirst = (o["First Name"] || "").trim() || (o["Given Name"] || "").trim();
       if (nm && (nm !== origNm || !hasFirst)) {
         const p = nm.split(/\s+/);
-        o["First Name"] = p[0] || "";
-        o["Last Name"] = p.slice(1).join(" ") || "";
+        o["First Name"] = p[0] || ""; o["Last Name"] = p.slice(1).join(" ") || "";
       }
       const email = r[map.email] || "";
       if (email && !(o["E-mail 1 - Value"] || "").trim()) {
@@ -429,7 +534,6 @@ export default function App() {
       if (eff.jobTitle) o["Organization Title"] = eff.jobTitle;
       if (eff.linkedinUrl) { o["Website 1 - Label"] = "LinkedIn"; o["Website 1 - Value"] = eff.linkedinUrl; }
       if (eff.website) { o["Website 2 - Label"] = "Company"; o["Website 2 - Value"] = eff.website; }
-
       const noteBits = [];
       if (eff.location) noteBits.push("Location: " + eff.location);
       if (eff.summary) noteBits.push(eff.summary);
@@ -471,8 +575,30 @@ export default function App() {
     download(Papa.unparse(data), "-enriched.csv");
   }, [rows, headers, map, fileName, selected]);
 
-  const reset = () => { setRows([]); setHeaders([]); setMap({}); setFileName(""); setOpen(null); setSelected(new Set()); setFilter("all"); };
+  const reset = () => {
+    setRows([]); setHeaders([]); setMap({}); setFileName(""); setOpen(null);
+    setSelected(new Set()); setFilter("all"); setSource(null); setMsg(""); setSyncedAt(null);
+  };
+
   const notConfigured = cfg && !cfg.configured;
+  const isGoogle = source === "google";
+
+  /* ----------------------------- gates ----------------------------- */
+  if (me === null) {
+    return <div className="cd-root"><style>{STYLE}</style><div className="cd-wrap" style={{ textAlign: "center", marginTop: "16vh", color: "var(--muted)" }}>Loading…</div></div>;
+  }
+  if (me.needsLogin) {
+    return (
+      <div className="cd-root">
+        <style>{STYLE}</style>
+        <div className="cd-login">
+          <div className="cd-word">AI<em>Contacts</em></div>
+          <p>Sign in with Google to enrich and sync your contacts. Your workspace is private to your account.</p>
+          <a className="cd-gbtn" href="/auth/google"><LogIn size={16} /> Sign in with Google</a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="cd-root">
@@ -480,42 +606,82 @@ export default function App() {
       <div className="cd-wrap">
         <header className="cd-head">
           <div>
-            <div className="cd-word">Contact <em>Dossier</em></div>
-            <div className="cd-sub">Upload · enrich via your own AI · correct · export for Google Contacts</div>
+            <div className="cd-word">AI<em>Contacts</em></div>
+            <div className="cd-sub">Enrich via your own AI · correct · sync with Google Contacts</div>
           </div>
-          <div className="cd-stamp cd-mono">
-            {rows.length ? `${enrichedCount} / ${rows.length} filed` : "no roster loaded"}
-          </div>
+          {me.email ? (
+            <div className="cd-acct">
+              {me.picture && <img src={me.picture} alt="" referrerPolicy="no-referrer" />}
+              <span className="em">{me.email}</span>
+              <button onClick={logout}><LogOut size={14} /> Sign out</button>
+            </div>
+          ) : (
+            <div className="cd-stamp cd-mono">{rows.length ? `${enrichedCount} / ${rows.length} filed` : "local mode"}</div>
+          )}
         </header>
 
         {rows.length === 0 ? (
-          <div
-            className={"cd-drop" + (over ? " over" : "")}
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setOver(true); }}
-            onDragLeave={() => setOver(false)}
-            onDrop={(e) => { e.preventDefault(); setOver(false); handleFile(e.dataTransfer.files[0]); }}
-          >
-            <div className="cd-circle"><Upload size={20} /></div>
-            <h3>Drop a contacts CSV, or click to choose</h3>
-            <p>Needs a name column. An email column unlocks company, logo, website, and photo.</p>
-            <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }}
-              onChange={(e) => handleFile(e.target.files[0])} />
-          </div>
+          isGoogle ? (
+            <div className="cd-drop" style={{ cursor: "default" }}>
+              <div className="cd-circle"><Cloud size={20} /></div>
+              <h3>No contacts cached yet</h3>
+              <p style={{ marginBottom: 16 }}>{msg || "Pull your contacts from Google to begin."}</p>
+              <button className="cd-btn go" onClick={syncGoogle} disabled={syncing}>
+                <RefreshCw size={15} className={syncing ? "spin" : ""} /> {syncing ? "Syncing…" : "Sync from Google"}
+              </button>
+              <div style={{ marginTop: 14 }}><span className="cd-link" onClick={reset}>← back</span></div>
+            </div>
+          ) : (source === "csv" || !me.googleEnabled) ? (
+            <div
+              className={"cd-drop" + (over ? " over" : "")}
+              onClick={() => fileRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+              onDragLeave={() => setOver(false)}
+              onDrop={(e) => { e.preventDefault(); setOver(false); handleFile(e.dataTransfer.files[0]); }}
+            >
+              <div className="cd-circle"><Upload size={20} /></div>
+              <h3>Drop a contacts CSV, or click to choose</h3>
+              <p>Needs a name column. An email column unlocks company, logo, website, and photo.</p>
+              {me.googleEnabled && <div style={{ marginTop: 14 }}><span className="cd-link" onClick={reset}>← back</span></div>}
+              <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }}
+                onChange={(e) => handleFile(e.target.files[0])} />
+            </div>
+          ) : (
+            <div className="cd-picker">
+              <div className="cd-card" onClick={openGoogle}>
+                <div className="cd-circle" style={{ margin: "0 auto" }}><Cloud size={20} /></div>
+                <h3>Google Contacts</h3>
+                <p>Pull your contacts straight from Google, enrich them, and sync changes back.</p>
+              </div>
+              <div className="cd-card" onClick={() => setSource("csv")}>
+                <div className="cd-circle" style={{ margin: "0 auto" }}><UploadCloud size={20} /></div>
+                <h3>Upload a CSV</h3>
+                <p>Import a contacts export, enrich it, and download an enriched or Google-ready CSV.</p>
+              </div>
+            </div>
+          )
         ) : (
           <>
             <div className="cd-bar">
-              <div className="cd-map">
-                {[["name", "Name"], ["email", "Email"], ["company", "Company"]].map(([k, lbl]) => (
-                  <div className="cd-field" key={k}>
-                    <label>{lbl} column</label>
-                    <select value={map[k] || ""} onChange={(e) => setMap({ ...map, [k]: e.target.value })}>
-                      <option value="">—</option>
-                      {headers.map((h) => <option key={h} value={h}>{h}</option>)}
-                    </select>
-                  </div>
-                ))}
-              </div>
+              {isGoogle ? (
+                <div className="cd-syncbar">
+                  <Cloud size={16} /> <b>Google Contacts</b> · {rows.length}
+                  {syncedAt ? <span>· synced {new Date(syncedAt).toLocaleString()}</span> : null}
+                  {msg ? <span style={{ color: "var(--ink2)" }}>· {msg}</span> : null}
+                </div>
+              ) : (
+                <div className="cd-map">
+                  {[["name", "Name"], ["email", "Email"], ["company", "Company"]].map(([k, lbl]) => (
+                    <div className="cd-field" key={k}>
+                      <label>{lbl} column</label>
+                      <select value={map[k] || ""} onChange={(e) => setMap({ ...map, [k]: e.target.value })}>
+                        <option value="">—</option>
+                        {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="cd-actions">
                 <button className="cd-btn alt cd-iconbtn" onClick={() => setShowEngine(!showEngine)} title="Enrichment engine">
                   <Settings size={15} />
@@ -525,25 +691,47 @@ export default function App() {
                     <StopCircle size={15} /> Stop
                   </button>
                 ) : (
-                  <button className="cd-btn" onClick={runAll}>
-                    <Search size={15} /> Enrich all
-                  </button>
+                  <button className="cd-btn" onClick={runAll}><Search size={15} /> Enrich all</button>
                 )}
                 <button className="cd-btn alt" onClick={runWeakDeep} disabled={running || !weakRows.length}
                   title="Re-run a deeper, multi-angle search on contacts that came back minimal or derived">
                   <Radar size={15} /> Deep re-check{weakRows.length ? ` (${weakRows.length})` : ""}
                 </button>
-                <button className="cd-btn alt" onClick={exportGoogle} disabled={!rows.length} title="CSV ready for Google Contacts import">
-                  <Download size={15} /> Google CSV{selected.size ? ` (${selected.size})` : ""}
-                </button>
-                <button className="cd-btn alt" onClick={exportFull} disabled={!rows.length} title="Original columns plus enrichment columns">
-                  <Download size={15} /> Full CSV{selected.size ? ` (${selected.size})` : ""}
-                </button>
-                <button className="cd-btn alt cd-iconbtn" onClick={reset} title="Load a different file">
+                {isGoogle ? (
+                  <>
+                    <button className="cd-btn go" onClick={pushGoogle} disabled={pushing || running}
+                      title="Write enriched fields back to Google Contacts">
+                      <CloudUpload size={15} className={pushing ? "spin" : ""} /> Push to Google{selected.size ? ` (${selected.size})` : ""}
+                    </button>
+                    <button className="cd-btn alt cd-iconbtn" onClick={syncGoogle} disabled={syncing || running} title="Re-pull from Google">
+                      <RefreshCw size={15} className={syncing ? "spin" : ""} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="cd-btn alt" onClick={exportGoogle} disabled={!rows.length} title="CSV ready for Google Contacts import">
+                      <Download size={15} /> Google CSV{selected.size ? ` (${selected.size})` : ""}
+                    </button>
+                    <button className="cd-btn alt" onClick={exportFull} disabled={!rows.length} title="Original columns plus enrichment columns">
+                      <Download size={15} /> Full CSV{selected.size ? ` (${selected.size})` : ""}
+                    </button>
+                  </>
+                )}
+                <button className="cd-btn alt cd-iconbtn" onClick={reset} title={isGoogle ? "Switch source" : "Load a different file"}>
                   <X size={15} />
                 </button>
               </div>
             </div>
+
+            {isGoogle && (
+              <div className="cd-bar" style={{ marginTop: 10, paddingTop: 10, paddingBottom: 10 }}>
+                <div className="cd-selinfo"><Info size={14} /> Google export also available:</div>
+                <div className="cd-actions">
+                  <button className="cd-btn alt" onClick={exportGoogle}><Download size={15} /> Google CSV{selected.size ? ` (${selected.size})` : ""}</button>
+                  <button className="cd-btn alt" onClick={exportFull}><Download size={15} /> Full CSV{selected.size ? ` (${selected.size})` : ""}</button>
+                </div>
+              </div>
+            )}
 
             {showEngine && (
               <div className="cd-engine">
@@ -560,13 +748,11 @@ export default function App() {
                   <p>
                     <span className="cd-warnpill"><AlertTriangle size={12} /> email-derived data only</span><br /><br />
                     No AI provider is set, so you’ll get company, website, logo, and photo from each email — but not job
-                    titles or locations. Set <code>AI_PROVIDER</code> (anthropic / openai / gemini) and
-                    <code> AI_API_KEY</code> in <code>.env</code>, then restart. You can still add data by hand on any contact.
+                    titles or locations. Set <code>AI_PROVIDER</code> and <code>AI_API_KEY</code> in <code>.env</code>, then restart.
                   </p>
                 )}
                 {cfg?.configured && (
-                  <p>Job titles, locations, and profiles come from <b>{cfg.provider}</b> using your own key, which stays
-                    on the server. Change provider, model, or key in <code>.env</code> and restart to take effect.</p>
+                  <p>Job titles, locations, and profiles come from <b>{cfg.provider}</b> using your own key, which stays on the server.</p>
                 )}
                 <label className="cd-toggle">
                   <span className="cd-switch">
@@ -575,7 +761,7 @@ export default function App() {
                   </span>
                   <span>
                     Require search — no email-derived data
-                    <span className="sub">When on, company/website/logo/photo are only kept if a live search finds them (needs a provider). Off = fast domain-derived data plus AI.</span>
+                    <span className="sub">When on, company/website/logo/photo are only kept if a live search finds them (needs a provider).</span>
                   </span>
                 </label>
               </div>
@@ -601,7 +787,7 @@ export default function App() {
                     <span className="cd-link" onClick={() => setSelected(new Set())}>Clear</span>
                   </>
                 ) : (
-                  <span>Tick rows to export only those; none ticked exports all.</span>
+                  <span>{isGoogle ? "Tick rows to push only those; none ticked pushes all enriched." : "Tick rows to export only those; none ticked exports all."}</span>
                 )}
               </div>
             </div>
@@ -654,14 +840,10 @@ export default function App() {
                       <div><span className={"cd-chip " + chipCls}>{chipTxt}</span></div>
                     </div>
                     {isOpen && (
-                      <Detail
-                        row={r} nm={nm}
-                        onCommit={commitEdits}
+                      <Detail row={r} nm={nm} onCommit={commitEdits}
                         onReject={(id) => setRejected(id, true)}
                         onRestore={(id) => setRejected(id, false)}
-                        onRetrace={runRow}
-                        onDeep={deepRow}
-                      />
+                        onRetrace={runRow} onDeep={deepRow} />
                     )}
                   </React.Fragment>
                 );
@@ -672,29 +854,22 @@ export default function App() {
 
         <div className="cd-note">
           <div className="cd-notehead" onClick={() => setShowNote(!showNote)}>
-            <Info size={16} /> How enrichment, edits, and export work
+            <Info size={16} /> How it works
             {showNote ? <ChevronDown size={15} style={{ marginLeft: "auto" }} /> : <ChevronRight size={15} style={{ marginLeft: "auto" }} />}
           </div>
           {showNote && (
             <div className="cd-notebody">
-              <b>Enrich.</b> Each contact gets email-derived data (company, website, logo, Gravatar photo) on the server,
-              then — if an AI provider is configured — a web-grounded job title, location, and profile merged on top.<br /><br />
-              <b>Deep re-check.</b> Contacts that come back <b>MINIMAL</b> or <b>DERIVED</b> can be re-run with a more
-              thorough, multi-angle search — more web lookups, your other CSV fields fed in as hints, and a stronger model
-              if you set <code>AI_MODEL_DEEP</code>. Use the toolbar button to sweep them all at once, or <b>Deep check</b>
-              on a single contact.<br /><br />
-              <b>Names.</b> Enrichment also fixes the name — correcting ALL-CAPS/lowercase, “Last, First” order, and names
-              that are really just an email — and replaces it with the correctly-spelled full name when the AI confidently
-              identifies the person. Override any name in the contact's <b>Full name</b> field.<br /><br />
-              <b>Correct or reject.</b> Open any contact to type your own values (these always win), or hit
-              <b> Reject enrichment</b> to drop the machine’s data for that person. Your typed corrections survive a reject,
-              so you can reject a bad guess and enter the right answer.<br /><br />
-              <b>Export.</b> <b>Google CSV</b> maps everything into Google Contacts’ own columns (Organization Name/Title,
-              Website, Notes, Photo, an “Enriched” label) and passes through any Google-format columns your file already had,
-              so it re-imports cleanly without losing phones or addresses. <b>Full CSV</b> keeps all your original columns and
-              appends the enrichment as extra columns. Both honor your edits and rejections.<br /><br />
-              <b>Verify.</b> AI results can be wrong or stale — the per-contact LinkedIn/Google links are there to confirm,
-              and your use should fit the contacts’ expectations and applicable privacy law.
+              <b>Sources.</b> Pull contacts from <b>Google</b> (your workspace is saved per account, so enrichment persists
+              between visits) or upload a <b>CSV</b>. Either way, enrichment is the same.<br /><br />
+              <b>Enrich.</b> Each contact gets email-derived data (company, website, logo, photo), then — if an AI provider is
+              configured — a web-grounded job title, location, profile, and corrected name merged on top. <b>Deep re-check</b>
+              re-runs the MINIMAL/DERIVED ones with a more thorough search.<br /><br />
+              <b>Correct or reject.</b> Open a contact to type your own values (these always win) or reject the machine’s data.<br /><br />
+              <b>Sync back (Google).</b> <b>Push to Google</b> writes enriched fields back to Google Contacts — the ticked
+              rows, or all enriched rows if none are ticked. It merges onto each contact (adding org/title, URLs, and a notes
+              line) using a fresh copy, so existing phones and addresses are preserved. Rejected contacts are never written.
+              Photos are read-only. You can also still export a Google-ready or full CSV.<br /><br />
+              <b>Verify.</b> AI results can be wrong or stale — the per-contact LinkedIn/Google links are there to confirm.
             </div>
           )}
         </div>
@@ -730,7 +905,7 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace, onDeep }) {
             </div>
           )}
           {e.rejected && (
-            <div className="cd-banner"><Ban size={15} /> Enrichment rejected — only original data and your edits will export.</div>
+            <div className="cd-banner"><Ban size={15} /> Enrichment rejected — only original data and your edits will sync/export.</div>
           )}
           {!e.rejected && e.data?.name && e.data.name !== (e.data.originalName || "") && !(e.edits?.name || "").trim() && (
             <div className="cd-banner">
@@ -747,9 +922,7 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace, onDeep }) {
                 {[f.jobTitle, f.company].filter(Boolean).join(" — ")}
               </span></div>
           )}
-          {!e.rejected && f.location && (
-            <div className="cd-detrow"><MapPin size={15} /><span>{f.location}</span></div>
-          )}
+          {!e.rejected && f.location && (<div className="cd-detrow"><MapPin size={15} /><span>{f.location}</span></div>)}
           {!e.rejected && f.website && (
             <div className="cd-detrow"><Globe size={15} />
               <a href={f.website} target="_blank" rel="noreferrer">{f.website.replace(/^https?:\/\//, "")}</a></div>
@@ -809,13 +982,9 @@ function Detail({ row, nm, onCommit, onReject, onRestore, onRetrace, onDeep }) {
               <Radar size={14} /> Deep check
             </button>
             {e.rejected ? (
-              <button className="cd-btn alt" onClick={() => onRestore(row.__id)}>
-                <Undo2 size={14} /> Restore enrichment
-              </button>
+              <button className="cd-btn alt" onClick={() => onRestore(row.__id)}><Undo2 size={14} /> Restore enrichment</button>
             ) : (
-              <button className="cd-btn danger" onClick={() => onReject(row.__id)}>
-                <Ban size={14} /> Reject enrichment
-              </button>
+              <button className="cd-btn danger" onClick={() => onReject(row.__id)}><Ban size={14} /> Reject enrichment</button>
             )}
           </div>
         </div>

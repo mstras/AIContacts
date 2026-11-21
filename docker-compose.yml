@@ -10,3 +10,8 @@ services:
     env_file: .env
     ports:
       - "${PORT:-8787}:8787"
+    volumes:
+      - aicontacts-data:/data   # SQLite DB, per-user workspaces, encrypted tokens
+
+volumes:
+  aicontacts-data:
