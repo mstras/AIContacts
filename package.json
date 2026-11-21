@@ -1,6 +1,6 @@
 {
   "name": "aicontacts",
-  "version": "2.0.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "description": "Enrich your contacts via your own AI provider (Anthropic, OpenAI, or Gemini) and sync with Google Contacts. Self-hosted, Dockerized.",
