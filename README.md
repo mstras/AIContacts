@@ -9,6 +9,28 @@ CSV. Self-hosted, multi-user, your keys stay on the server. Ships as a prebuilt 
 
 Repo: <https://github.com/mstras/AIContacts> · Image: `ghcr.io/mstras/aicontacts`
 
+## Screenshots
+
+![Contacts list](docs/screenshots/desktop-contacts-light.png)
+
+| Contact detail | Sign in |
+| --- | --- |
+| ![Contact detail](docs/screenshots/desktop-detail-light.png) | ![Sign in](docs/screenshots/desktop-signin-light.png) |
+
+Dark mode is built in and follows your system (with a manual toggle):
+
+![Contacts in dark mode](docs/screenshots/desktop-contacts-dark.png)
+
+### On a phone
+
+<p>
+  <img src="docs/screenshots/phone-contacts-light.png" alt="Contacts on mobile" width="31%">
+  <img src="docs/screenshots/phone-detail-light.png" alt="Contact detail on mobile" width="31%">
+  <img src="docs/screenshots/phone-contacts-dark.png" alt="Contacts on mobile, dark" width="31%">
+</p>
+
+> Screens shown with sample data.
+
 ## What it does
 
 - **Two sources.** Pull contacts straight from **Google Contacts**, or upload a **CSV**. Same
